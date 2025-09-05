@@ -1,0 +1,140 @@
+# This workflow will build a Java project with Maven, and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-maven
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+name: maven
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      page:
+        description: 'Select a single page to test'
+        required: true
+        default: 'All'
+        type: choice
+        options:
+          - All
+          - HostsAgenciesTests
+          - BDTests
+
+      classes:
+        description: 'Optional: Comma-separated list of test classes to run (e.g., HostsAgenciesTests,BDTests)'
+        required: false
+
+      recordVideo:
+        description: 'Enable Video Recording?'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+      parallelExecution:
+        description: 'Enable Parallel Execution by METHODS?'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+      headlessExecution:
+        description: 'Run in Headless Mode?'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+jobs:
+  runGuiTests:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.5
+
+      - name: Run selected tests
+        shell: bash
+        run: |
+          # Parallel options
+          if [ "${{ github.event.inputs.parallelExecution }}" = "true" ]; then
+            PARALLEL_OPTS="-DsetParallel=METHODS -DsetParallelMode=STATIC -DsetThreadCount=3"
+          else
+            PARALLEL_OPTS=""
+          fi
+
+          # Video options
+          RECORD_VIDEO=$([ "${{ github.event.inputs.recordVideo }}" = "true" ] && echo "true" || echo "false")
+
+          # Headless option
+          HEADLESS=$([ "${{ github.event.inputs.headlessExecution }}" = "true" ] && echo "true" || echo "false")
+
+          # Tests to run (priority: classes > page > all)
+          if [ -n "${{ github.event.inputs.classes }}" ]; then
+            TEST_OPTS="-Dtest=${{ github.event.inputs.classes }}"
+          elif [ "${{ github.event.inputs.page }}" != "All" ]; then
+            TEST_OPTS="-Dtest=${{ github.event.inputs.page }}"
+          else
+            TEST_OPTS=""
+          fi
+
+          # Final Maven command (always generate allure zip)
+          mvn -e test \
+            -DtargetOperatingSystem=WINDOWS \
+            -DtargetBrowserName=chrome \
+            -DheadlessExecution=$HEADLESS \
+            -DvideoParams_recordVideo=$RECORD_VIDEO \
+            -DgenerateAllureReportArchive=true \
+            $PARALLEL_OPTS \
+            $TEST_OPTS
+
+      - name: Upload coverage to Codecov
+        uses:  codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          files: ./target/jacoco/jacoco.xml
+          verbose: true
+
+      - name: Upload Allure Report as Pipeline Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows_Chrome_Local_Allure
+          path: "allure-report/*.html"
+      - name: Test Summary
+        uses: test-summary/action@v2
+        with:
+          paths: "target/surefire-reports/junitreports/TEST-*.xml"
